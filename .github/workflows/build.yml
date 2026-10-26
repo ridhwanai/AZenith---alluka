@@ -198,7 +198,15 @@ jobs:
         id: compileZip
         run: bash .github/scripts/compile_zip.sh
 
+      - name: Upload Flashable Zip Artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ${{ steps.compileZip.outputs.artifactName }}
+          path: ${{ steps.compileZip.outputs.zipName }}
+          if-no-files-found: error
+
       - name: Upload To Telegram
+        if: false # Dilewati sesuai permintaan
         env:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
@@ -211,6 +219,5 @@ jobs:
             export VERSION=$(git rev-list --count HEAD)
             bash .github/scripts/telebot.sh "${{ steps.compileZip.outputs.zipName }}"
           else
-            echo "Telegram bot token or chatid is undefined!"
-            exit 1
+            echo "Telegram bot token or chatid is undefined, skipping..."
           fi
