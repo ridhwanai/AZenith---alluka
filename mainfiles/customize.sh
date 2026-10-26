@@ -55,7 +55,7 @@ install_manager() {
     local app_name="$2"
     local tmp_log="$TMP_DIR/install_log.txt"
 
-    local MAX_TIMEOUT=100
+    local MAX_TIMEOUT=300
 
     (
         local install_output
@@ -82,7 +82,7 @@ install_manager() {
         if [ $i -ge $MAX_TIMEOUT ]; then
             echo "[!] Installation took too long. Stopping..."
             kill -9 $pid 2>/dev/null
-            echo "Timeout: Installation exceeded 10 seconds" > "$tmp_log"
+            echo "Timeout: Installation exceeded 30 seconds" > "$tmp_log"
             break
         fi
     done
@@ -100,7 +100,14 @@ install_manager() {
         return 0
     else
         echo "[!] Failed to install $app_name"
-        if echo "$result" | grep -iq "Timeout"; then
+        if echo "$result" | grep -iq "UPDATE_INCOMPATIBLE\|signatures do not match"; then
+            echo "  Error log: $(echo "$result" | head -n 2)"
+            echo "  Error: The manager already on this device was signed with a"
+            echo "         different key (a different build source), and Android"
+            echo "         refuses to update an app across signing keys."
+            echo "  Fix: Uninstall the old AZenith Manager app, then press the"
+            echo "       module Action button (or flash this module again)."
+        elif echo "$result" | grep -iq "Timeout"; then
             echo "  Error: Installation failed due to Timeout"
             echo "  Possible reason: Your Rom blocking background install."
         else
@@ -146,6 +153,11 @@ abort_arch() {
 
 installation_complete() {
   echo "- AZenith has been successfully installed"
+  if [ "$APP_INSTALLED" != "true" ]; then
+    echo "! NOTE: AZenith Manager was NOT installed/updated (see the error above)."
+    echo "! The module itself is fully installed; only the manager app is missing"
+    echo "! or still the old build. Install it via the module Action button."
+  fi
   echo "- Thank you for choosing AZenith!"
   echo "- Please reboot your device."
   echo "- Open Manager from Action"

@@ -275,6 +275,25 @@ class ZXSidePanelService : Service(), LifecycleOwner, ViewModelStoreOwner, Saved
                 android.util.Log.e("ZXSidePanelService", "Failed to hide service", e)
             }
         }
+
+        /**
+         * Ends the service for real (onDestroy removes the foreground
+         * "Game Space overlay active" notification with it). This is the
+         * session-end path the service was missing: it is called from
+         * ZenithReceiver when the daemon leaves the Performance profile
+         * (Balanced/ECO broadcast), which is the daemon's own signal that
+         * the game session is over. A mere foreground change (minimize)
+         * must NOT end the service — use hide() for that.
+         */
+        fun stop(context: Context) {
+            if (!isServiceActive) return
+            if (isForceSidepanelEnabled()) return
+            try {
+                context.stopService(Intent(context, ZXSidePanelService::class.java))
+            } catch (e: Exception) {
+                android.util.Log.e("ZXSidePanelService", "Failed to stop service", e)
+            }
+        }
     }
 
     private val lifecycleRegistry = LifecycleRegistry(this)
@@ -533,29 +552,6 @@ class ZXSidePanelService : Service(), LifecycleOwner, ViewModelStoreOwner, Saved
         // that resurrection was one way "Game Space overlay active"
         // stayed in the notification bar after the game was gone.
         return START_NOT_STICKY
-    }
-
-    /**
-     * Ends the service (and with it the foreground "Game Space overlay
-     * active" notification) when a game session is over. The service had
-     * no reachable stop path before: it was created on game start and
-     * then ran — and notified — forever.
-     *
-     * Kept alive when the user explicitly forced the side panel on, or
-     * while floating app windows still need the host service.
-     */
-    private fun stopSelfAfterGameExit() {
-        if (isForceSidepanelEnabled()) return
-        if (floatingAppManager?.sessions?.isNotEmpty() == true) return
-        runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-            } else {
-                @Suppress("DEPRECATION")
-                stopForeground(true)
-            }
-        }
-        stopSelf()
     }
 
     override fun onDestroy() {
@@ -1481,11 +1477,20 @@ class ZXSidePanelService : Service(), LifecycleOwner, ViewModelStoreOwner, Saved
                                     isPanelExpanded = false
                                     isWindowFullScreen = false
                                     detachOverlay()
-                                    // The actual fix for the stuck
-                                    // "Game Space overlay active"
-                                    // notification: end the service whose
-                                    // foreground notification it is.
-                                    if (hadGameSession) stopSelfAfterGameExit()
+                                    // Deliberately NOT stopping the
+                                    // service here: leaving the foreground
+                                    // is not the end of the session. The
+                                    // daemon keeps the Performance profile
+                                    // while the game process is alive
+                                    // (the drop-on-foreground-loss setting
+                                    // is opt-in, with a 30s grace), so a
+                                    // minimize to answer a chat must only
+                                    // hide the panel — the v1 fix killed
+                                    // the service here, and with it the
+                                    // whole GameSpace for the session.
+                                    // The service ends on the daemon's
+                                    // Balanced/ECO broadcast instead
+                                    // (see ZenithReceiver / stop()).
                                 }
                             }
                         }
@@ -1770,9 +1775,9 @@ class ZXSidePanelService : Service(), LifecycleOwner, ViewModelStoreOwner, Saved
     private fun startRealTelemetryMonitor() {
         telemetryJob?.cancel()
         telemetryJob = serviceScope.launch(Dispatchers.IO) {
-            var tick = 0
             var lastObservedProfileCode = ""
             var lastParsedStartTimeStr = ""
+            var lastPingAtMs = 0L
 
             while (isActive) {
                 if (isHandleVisible || panelState.floatingHudVisible) {
@@ -1868,7 +1873,14 @@ class ZXSidePanelService : Service(), LifecycleOwner, ViewModelStoreOwner, Saved
 
                     // 4. Periodically measure network latency & sync external brightness/volume changes
                     var measuredPing = panelState.pingMs
-                    if (tick % 3 == 0) {
+                    // At most once per 10s (was: every 3rd tick ≈ every
+                    // 1.2–3s). Each measurement opens a TCP connection to
+                    // 8.8.8.8 — on a weak mobile signal that is periodic
+                    // radio work on the same link the game is using, and
+                    // a panel ping readout does not need to be fresher
+                    // than this; the game shows its own ping anyway.
+                    if (System.currentTimeMillis() - lastPingAtMs >= 10_000L) {
+                        lastPingAtMs = System.currentTimeMillis()
                         telemetryCollector.measureTcpPingMs()?.let { measuredPing = it }
                     }
 
@@ -1896,7 +1908,6 @@ class ZXSidePanelService : Service(), LifecycleOwner, ViewModelStoreOwner, Saved
                         panelState.profileDurationText = durationFormatted
                         panelState.pingMs = measuredPing
                     }
-                    tick++
                 }
                 delay(if (panelState.floatingHudVisible) 400L else 1000L)
             }
@@ -2334,6 +2345,7 @@ private class ZXRealTelemetryCollector {
     private var cachedLayer: String? = null
     private var cachedLayerPkg: String? = null
     private var sfLastNewest = -1L
+    private var sfStaleSamples = 0
 
     // Layers that carry no frame history even when the name matches the package.
     private val layerBlacklist = listOf(
@@ -2349,8 +2361,22 @@ private class ZXRealTelemetryCollector {
      */
     fun sampleFps(pkg: String, rootGranted: Boolean, defaultCap: Int): Int {
         val cap = defaultCap.coerceAtLeast(60)
-        // Portable first: per-layer presented frames, needs no root and assumes nothing
-        // about the SoC. The vendor node is the fallback for builds that stubbed it.
+        // MTK GED first: the kernel graphics daemon's own FPS counter is
+        // a plain sysfs file read — no process spawn, no binder call. The
+        // SF tier below execs a dumpsys into the SurfaceFlinger process
+        // on every sample; on a low-end SoC that periodic compositor
+        // work is itself a frame-time cost while gaming, so it must not
+        // be the primary source where a vendor counter exists. (This
+        // tier existed before the SF rework and was dropped with it;
+        // on MTK it also keeps working when the game's presenting
+        // layer is a SurfaceView the SF probe cannot see.)
+        readGedFps(rootGranted, cap)?.let {
+            lastFps = it
+            lastFpsSource = "ged"
+            return lastFps
+        }
+        // Portable fallback: per-layer presented frames, needs no root
+        // and assumes nothing about the SoC.
         readSurfaceFlingerFps(pkg)?.let {
             lastFps = it.coerceIn(1, cap)
             lastFpsSource = "sf-latency"
@@ -2370,6 +2396,23 @@ private class ZXRealTelemetryCollector {
         lastFps = hwui
         lastFpsSource = if (hwui > 0) "hwui-render" else ""
         return hwui
+    }
+
+    /** GED's current FPS: ged_kpi leads with it, the plain nodes hold only it. */
+    private fun readGedFps(rootGranted: Boolean, cap: Int): Int? {
+        val kpi = readFileTextDirectOrSu("/sys/kernel/ged/hal/ged_kpi", rootGranted)?.trim()
+        if (!kpi.isNullOrBlank()) {
+            val v = kpi.substringBefore(',').trim().toIntOrNull()
+            if (v != null && v in 1..cap) return v
+        }
+        val raw = readFileTextDirectOrSu("/sys/kernel/ged/hal/current_fps", rootGranted)?.trim()
+            ?: readFileTextDirectOrSu("/sys/module/ged/parameters/fps", rootGranted)?.trim()
+            ?: readFileTextDirectOrSu("/sys/class/fps/fps", rootGranted)?.trim()
+        if (!raw.isNullOrBlank()) {
+            val v = Regex("\\d+").find(raw)?.value?.toIntOrNull()
+            if (v != null && v in 1..cap) return v
+        }
+        return null
     }
 
     /**
@@ -2398,11 +2441,26 @@ private class ZXRealTelemetryCollector {
         val raw = runShell("dumpsys SurfaceFlinger --latency '$layer'") ?: return null
         val fps = parseLatencyFps(raw)
         if (fps == null) {
-            cachedLayer = null
-            cachedLayerPkg = null
-            // sfLastNewest is deliberately NOT reset here: a null caused
-            // by staleness must stay stale on the next sample too, or the
-            // meter would oscillate between the frozen value and 0.
+            if (sfStaleSamples >= 3) {
+                // The cached layer presented nothing new for 3 samples in
+                // a row: it is the wrong or a dead layer (the classic case
+                // is the activity window layer of a Unity game, whose ring
+                // freezes once its SurfaceView takes over). Drop the cache
+                // AND the staleness baseline so the next sample re-probes
+                // and can lock onto the layer that is actually presenting.
+                // The v1 fix never reset either one here, so once a layer
+                // went stale the meter stayed at 0 for the whole session.
+                cachedLayer = null
+                cachedLayerPkg = null
+                sfStaleSamples = 0
+                sfLastNewest = -1L
+            } else if (sfStaleSamples == 0) {
+                // A genuine parse failure, not staleness: don't keep the
+                // layer cached. A stale sample below the threshold keeps
+                // the cache instead of re-probing 6 layers every sample.
+                cachedLayer = null
+                cachedLayerPkg = null
+            }
         }
         return fps
     }
@@ -2416,20 +2474,39 @@ private class ZXRealTelemetryCollector {
     private fun resolveAppLayer(pkg: String): String? {
         if (cachedLayer != null && cachedLayerPkg == pkg) return cachedLayer
         val list = runShell("dumpsys SurfaceFlinger --list") ?: return null
-        val candidates = list.lineSequence()
+        val windowCandidates = list.lineSequence()
             .mapNotNull { Regex("[a-zA-Z0-9_.]+/[a-zA-Z0-9_.$]+#\\d+").find(it)?.value }
             .filter { it.startsWith("$pkg/") }
+        // The layer that actually presents a Unity/Vulkan game is its
+        // SurfaceView (BLAST) layer, whose list name starts with
+        // "SurfaceView[...]" and never matches the "$pkg/..." pattern
+        // above. Without these candidates the probe only ever finds the
+        // activity window layer, whose frame history freezes as soon as
+        // the game surface takes over — the meter then has no live
+        // layer to read for the whole match.
+        val surfaceCandidates = list.lineSequence()
+            .map { it.trim() }
+            .filter { it.contains(pkg) && it.contains("SurfaceView") && !it.contains("Background") }
+        val candidates = (surfaceCandidates + windowCandidates)
             .filterNot { name -> layerBlacklist.any { name.contains(it) } }
             .distinct()
-            .take(6)
+            .take(8)
             .toList()
+        // Score by recency, not raw row count: --latency prints a full
+        // ring (~128 lines) even for a layer that stopped presenting
+        // long ago, so row count cannot tell a live layer from a frozen
+        // one. The layer with the newest presented frame wins.
         var best: String? = null
-        var bestRows = 1
+        var bestNewest = -1L
+        var bestValid = 1
         for (name in candidates) {
             val raw = runShell("dumpsys SurfaceFlinger --latency '$name'") ?: continue
-            val rows = raw.lines().count { it.isNotBlank() } - 1
-            if (rows > bestRows) {
-                bestRows = rows
+            val presents = latencyPresents(raw)
+            if (presents.size < 2) continue
+            val newest = presents.maxOrNull() ?: continue
+            if (newest > bestNewest || (newest == bestNewest && presents.size > bestValid)) {
+                bestNewest = newest
+                bestValid = presents.size
                 best = name
             }
         }
@@ -2446,7 +2523,7 @@ private class ZXRealTelemetryCollector {
      * minutes, so only the most recent second is counted - otherwise a screen that
      * stopped drawing keeps reporting its lifetime average instead of dropping to 0.
      */
-    private fun parseLatencyFps(raw: String): Int? {
+    private fun latencyPresents(raw: String): ArrayList<Long> {
         val presents = ArrayList<Long>()
         for ((index, line) in raw.lineSequence().withIndex()) {
             if (index == 0) continue
@@ -2456,19 +2533,42 @@ private class ZXRealTelemetryCollector {
             if (t <= 0L || t == Long.MAX_VALUE) continue
             presents += t
         }
-        if (presents.size < 2) return null
-        val newest = presents.last()
+        return presents
+    }
+
+    private fun parseLatencyFps(raw: String): Int? {
+        val presents = latencyPresents(raw)
+        if (presents.size < 2) {
+            sfStaleSamples = 0
+            return null
+        }
+        // max(), not last(): the ring is circular, so once it wraps the
+        // last printed line is no longer the newest frame.
+        val newest = presents.maxOrNull() ?: return null
         // The latency ring is only rewritten when frames are presented.
         // An identical newest timestamp to the previous sample means
         // nothing was presented since: the game is stalled or static, so
         // report no FPS (the caller falls through and shows 0) instead of
-        // re-reporting the last active second forever.
-        if (newest == sfLastNewest) return null
-        sfLastNewest = newest
+        // re-reporting the last active second forever. The stale count
+        // lets readSurfaceFlingerFps give up on this layer after a few
+        // samples instead of trusting it for the whole session.
+        if (newest == sfLastNewest) {
+            sfStaleSamples++
+            return null
+        }
         val windowed = presents.filter { it >= newest - 1_000_000_000L }
+        val start = windowed.minOrNull() ?: return null
         // Two frames a few ms apart are a dying animation, not a frame rate.
-        if (windowed.size < 2 || windowed.last() - windowed.first() < 200_000_000L) return null
-        val span = windowed.last() - windowed.first()
+        if (windowed.size < 2 || newest - start < 200_000_000L) {
+            sfStaleSamples = 0
+            return null
+        }
+        // Only a successful measurement moves the staleness baseline:
+        // the v1 fix set it before the window checks above, so one
+        // too-short window poisoned every later sample of that layer.
+        sfLastNewest = newest
+        sfStaleSamples = 0
+        val span = newest - start
         return ((windowed.size - 1) * 1_000_000_000.0 / span).roundToInt()
     }
 

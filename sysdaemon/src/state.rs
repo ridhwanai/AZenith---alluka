@@ -356,12 +356,17 @@ pub(crate) fn remove_proc(pid: i32, why: &str) {
         let mut s = st();
         let removed = s.procs.remove(&pid).map(|(p, _)| p);
         if let Some(ref pkg) = removed {
-            // The process that was just listed died -> remove the package
-            // from background_apps entirely (no fallback to other pids).
-            if !s.focused.as_ref().is_some_and(|(f, _, _)| f == pkg) {
+            // Only when the package has no live process left is it gone:
+            // remove it from background_apps entirely (no fallback to
+            // other apps' pids). A multi-process game (ML and friends run
+            // several processes under one base package) must NOT be
+            // evicted when one secondary process dies while the game is
+            // backgrounded — the C daemon reads the missing package as
+            // "game closed" and drops the Performance profile in the
+            // middle of a match the user only minimized.
+            if !s.procs.values().any(|(p, _)| p == pkg) {
                 s.recent.retain(|x| x != pkg);
-            } else {
-                if !s.procs.values().any(|(p, _)| p == pkg) {
+                if s.focused.as_ref().is_some_and(|(f, _, _)| f == pkg) {
                     s.focused = None;
                 }
             }

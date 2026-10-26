@@ -55,7 +55,8 @@ pub struct BlockIoTweaks {
 pub struct CommonTweaks {
     /// `/proc/sys/vm/vfs_cache_pressure`
     pub vfs_cache_pressure: &'static str,
-    /// `/proc/sys/vm/drop_caches` — only performance touches this node.
+    /// `/proc/sys/vm/drop_caches` — currently no profile touches this
+    /// node (see performance.rs for why); kept so a profile can opt in.
     pub drop_caches: Option<&'static str>,
     /// `/sys/module/workqueue/parameters/power_efficient`
     pub power_efficient: &'static str,

@@ -18,7 +18,13 @@ const BLOCK_IO: BlockIoTweaks = BlockIoTweaks {
 
 const TWEAKS: CommonTweaks = CommonTweaks {
     vfs_cache_pressure: "80",
-    drop_caches: Some("3"),
+    // No drop_caches here: writing "3" at game start evicts every clean
+    // page in RAM — the game's own streaming assets and, critically, the
+    // pages of a music app that must stay resident — so the first minutes
+    // of a match pay storage refaults for RAM that the kernel would have
+    // reclaimed on demand anyway. That trade is a classic cause of
+    // "game + music" stutter on small-RAM devices.
+    drop_caches: None,
     power_efficient: "N",
     eas_enabled: "0",
     stune_boost: "30",

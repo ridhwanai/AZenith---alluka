@@ -77,7 +77,16 @@ class ZenithReceiver : BroadcastReceiver() {
                     notifyTitle.contains("Balanced Profile", ignoreCase = true) ||
                     notifyMessage.contains("Manual", ignoreCase = true)
                 ) {
-                    zx.azenith.ui.gamespace.ZXSidePanelService.hide(context)
+                    // Leaving the Performance profile is the daemon's
+                    // session-end signal: stop the service (and its
+                    // foreground notification) instead of only hiding the
+                    // panel. Hiding alone left the service — and the
+                    // "Game Space overlay active" notification — alive
+                    // forever; stopping on a mere foreground change
+                    // (minimize) would be just as wrong, because the
+                    // daemon intentionally keeps Performance while the
+                    // game process is alive in the background.
+                    zx.azenith.ui.gamespace.ZXSidePanelService.stop(context)
                 }
 
                 val openFloatingPkg = intent.getStringExtra("open_floating_app")
