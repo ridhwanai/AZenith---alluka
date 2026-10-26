@@ -54,7 +54,10 @@ STATE=$(getprop persist.sys.azenith.state)
 
 # Expose public read access on CPU/GPU telemetry sysfs nodes and API mirror so the app reads via File IO without shell polling
 mkdir -p /data/data/zx.azenith/API "$MODULE_CONFIG/API" 2>/dev/null
-chmod 0777 /data/data/zx.azenith/API 2>/dev/null
+# 0750, not 0777: the root daemon parses API/current_profile from this
+# tree, so it must not be writable by every app on the device. The
+# manager owns the directory (rwx) and root bypasses permission checks.
+chmod 0750 /data/data/zx.azenith/API 2>/dev/null
 chmod 0644 /data/data/zx.azenith/API/* "$MODULE_CONFIG/API/"* 2>/dev/null
 
 for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/cpufreq; do

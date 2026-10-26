@@ -17,8 +17,25 @@
 #
 
 q() {
-    pkill -9 -f "$1"
+    pkill -TERM -f "$1" 2>/dev/null
 }
+
+q9() {
+    pkill -9 -f "$1" 2>/dev/null
+}
+
+# Stop the daemons BEFORE deleting any state: a still-running daemon
+# recreates /data/adb/.config/AZenith (current_profile, gameinfo,
+# daemon_state) and would resurrect files after the rm -rf below.
+# TERM first so the daemon can restore the balanced profile on exit;
+# -9 is only a fallback for a daemon that did not exit in time.
+q sys.azenith-rianixiathermalcore
+q sys.azenith-service
+q sys.azenith-appmonitoring
+sleep 1
+q9 sys.azenith-rianixiathermalcore
+q9 sys.azenith-service
+q9 sys.azenith-appmonitoring
 
 resetprop | awk -F'[][]' '/persist\.sys\.azenith/ {print $2}' | while read -r prop; do
     resetprop -p --delete "$prop"
@@ -34,10 +51,6 @@ rm -rf \
     "/data/data/zx.azenith"
 : > "/data/adb/modules/AZenith/remove"
 
-q sys.azenith-rianixiathermalcore
-q sys.azenith-service
-q sys.azenith-appmonitoring
-    
 pm uninstall zx.azenith >/dev/null 2>&1 &
 
 for dir in "/data/adb/ap/bin" "/data/adb/ksu/bin"; do

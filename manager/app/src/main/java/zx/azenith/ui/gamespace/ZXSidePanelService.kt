@@ -218,6 +218,12 @@ class ZXSidePanelService : Service(), LifecycleOwner, ViewModelStoreOwner, Saved
         const val PROP_FORCE_SIDEPANEL = "persist.sys.azenith.force_sidepanel"
         const val PROP_FORCE_SIDEPANEL_DEBUG = "debug.azenith.force_sidepanel"
 
+        // Must NOT be 1001: ZenithReceiver posts the profile notification
+        // with ID 1001 (channel az_profile). Sharing the ID made the two
+        // notifications overwrite each other, so the "Game Space overlay
+        // active" text could stick around after the profile changed.
+        private const val FOREGROUND_NOTIFICATION_ID = 1002
+
         val appsOpenedFromAzenith: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
         fun registerAppOpenedFromAzenith(packageName: String) {
@@ -522,7 +528,34 @@ class ZXSidePanelService : Service(), LifecycleOwner, ViewModelStoreOwner, Saved
                 isHandleVisible = true
             }
         }
-        return START_STICKY
+        // NOT_STICKY: a killed overlay service must not be resurrected by
+        // the system with its foreground notification but no game —
+        // that resurrection was one way "Game Space overlay active"
+        // stayed in the notification bar after the game was gone.
+        return START_NOT_STICKY
+    }
+
+    /**
+     * Ends the service (and with it the foreground "Game Space overlay
+     * active" notification) when a game session is over. The service had
+     * no reachable stop path before: it was created on game start and
+     * then ran — and notified — forever.
+     *
+     * Kept alive when the user explicitly forced the side panel on, or
+     * while floating app windows still need the host service.
+     */
+    private fun stopSelfAfterGameExit() {
+        if (isForceSidepanelEnabled()) return
+        if (floatingAppManager?.sessions?.isNotEmpty() == true) return
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        }
+        stopSelf()
     }
 
     override fun onDestroy() {
@@ -582,9 +615,9 @@ class ZXSidePanelService : Service(), LifecycleOwner, ViewModelStoreOwner, Saved
                 } else {
                     0
                 }
-                startForeground(1001, notification, fgsType)
+                startForeground(FOREGROUND_NOTIFICATION_ID, notification, fgsType)
             } else {
-                startForeground(1001, notification)
+                startForeground(FOREGROUND_NOTIFICATION_ID, notification)
             }
         }.onFailure { e ->
             android.util.Log.w("ZXSidePanelService", "startForeground failed: ${e.message}")
@@ -1435,18 +1468,24 @@ class ZXSidePanelService : Service(), LifecycleOwner, ViewModelStoreOwner, Saved
                             // Last floating window just closed: hold the panel until the game
                             // behind it is resumed, or it vanishes with the floating app.
                         } else {
+                            val hadGameSession = activeGamePackage != null
                             pendingLaunchPkg = null
                             pendingLaunchGraceUntilMs = 0L
                             activeGamePackage = null
                             panelState.activeGamePackage = null
                             activeGameLabel = null
-                            if (isHandleVisible || isViewAttached) {
+                            if (isHandleVisible || isViewAttached || hadGameSession) {
                                 withContext(Dispatchers.Main) {
                                     stopFpsChoreographer()
                                     isHandleVisible = false
                                     isPanelExpanded = false
                                     isWindowFullScreen = false
                                     detachOverlay()
+                                    // The actual fix for the stuck
+                                    // "Game Space overlay active"
+                                    // notification: end the service whose
+                                    // foreground notification it is.
+                                    if (hadGameSession) stopSelfAfterGameExit()
                                 }
                             }
                         }
@@ -1468,11 +1507,21 @@ class ZXSidePanelService : Service(), LifecycleOwner, ViewModelStoreOwner, Saved
         }
     }
 
+    @Volatile
+    private var cachedLauncherPkg: String? = null
+
     private fun isLauncherPackage(pkg: String): Boolean {
+        // Resolved once per service lifetime: this previously ran an
+        // uncached PackageManager.resolveActivity on every 550ms
+        // monitor poll, forever.
+        val cached = cachedLauncherPkg
+        if (cached != null) return cached == pkg
         return try {
             val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
             val resolve = packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
-            resolve?.activityInfo?.packageName == pkg
+            val launcher = resolve?.activityInfo?.packageName
+            if (launcher != null) cachedLauncherPkg = launcher
+            launcher == pkg
         } catch (_: Exception) {
             false
         }
@@ -1540,7 +1589,10 @@ class ZXSidePanelService : Service(), LifecycleOwner, ViewModelStoreOwner, Saved
         fpsSamplerJob?.cancel()
         fpsSamplerJob = serviceScope.launch(Dispatchers.IO) {
             while (isActive) {
-                delay(1_000L)
+                // 500ms (was 1000ms): the effective period used to be
+                // 1s + the blocking dumpsys exec time, so the meter
+                // updated at well under 1Hz and felt unresponsive.
+                delay(500L)
                 val pkg = activeGamePackage
                 if (pkg.isNullOrBlank()) {
                     panelState.currentFps = 0
@@ -1549,13 +1601,21 @@ class ZXSidePanelService : Service(), LifecycleOwner, ViewModelStoreOwner, Saved
                 val cap = panelState.fpsCap.coerceAtLeast(60)
                 val sampled = telemetryCollector.sampleFps(pkg, checkRootGranted(), cap)
                 withContext(Dispatchers.Main) {
-                    panelState.currentFps = sampled
+                    // Light smoothing: average with the previous value so
+                    // single-sample noise doesn't make the meter jitter,
+                    // while changes still show within one sample.
+                    val prev = panelState.currentFps
+                    panelState.currentFps =
+                        if (sampled > 0 && prev > 0) (sampled + prev) / 2 else sampled
                 }
             }
         }
     }
 
     private fun stopFpsChoreographer() {
+        // Clear the value too: a reopened panel used to keep showing the
+        // previous game's FPS until the first new sample arrived.
+        panelState.currentFps = 0
         if (!fpsTrackingActive) return
         fpsTrackingActive = false
         fpsSamplerJob?.cancel()
@@ -1569,8 +1629,12 @@ class ZXSidePanelService : Service(), LifecycleOwner, ViewModelStoreOwner, Saved
             val currentRate = display.refreshRate.roundToInt().coerceAtLeast(60)
             val maxRate = display.supportedModes.maxOfOrNull { it.refreshRate.roundToInt() } ?: currentRate
             panelState.fpsCap = maxRate.coerceAtLeast(currentRate)
-            if (panelState.currentFps <= 0 || panelState.currentFps > panelState.fpsCap) {
-                panelState.currentFps = currentRate
+            // Only clamp. Never seed currentFps with the panel refresh
+            // rate: the meter used to show the display Hz (e.g. "90 FPS")
+            // for the first second of every game, before a single frame
+            // of the game had been measured.
+            if (panelState.currentFps > panelState.fpsCap) {
+                panelState.currentFps = panelState.fpsCap
             }
         }
     }
@@ -2266,8 +2330,10 @@ private class ZXRealTelemetryCollector {
 
     private var hwuiPrevFrames = -1L
     private var hwuiPrevAtMs = 0L
+    private var hwuiPrevPkg: String? = null
     private var cachedLayer: String? = null
     private var cachedLayerPkg: String? = null
+    private var sfLastNewest = -1L
 
     // Layers that carry no frame history even when the name matches the package.
     private val layerBlacklist = listOf(
@@ -2334,6 +2400,9 @@ private class ZXRealTelemetryCollector {
         if (fps == null) {
             cachedLayer = null
             cachedLayerPkg = null
+            // sfLastNewest is deliberately NOT reset here: a null caused
+            // by staleness must stay stale on the next sample too, or the
+            // meter would oscillate between the frozen value and 0.
         }
         return fps
     }
@@ -2389,6 +2458,13 @@ private class ZXRealTelemetryCollector {
         }
         if (presents.size < 2) return null
         val newest = presents.last()
+        // The latency ring is only rewritten when frames are presented.
+        // An identical newest timestamp to the previous sample means
+        // nothing was presented since: the game is stalled or static, so
+        // report no FPS (the caller falls through and shows 0) instead of
+        // re-reporting the last active second forever.
+        if (newest == sfLastNewest) return null
+        sfLastNewest = newest
         val windowed = presents.filter { it >= newest - 1_000_000_000L }
         // Two frames a few ms apart are a dying animation, not a frame rate.
         if (windowed.size < 2 || windowed.last() - windowed.first() < 200_000_000L) return null
@@ -2402,6 +2478,15 @@ private class ZXRealTelemetryCollector {
      * for a GL/Vulkan game, so it is only reached when nothing better exists.
      */
     private fun readHwuiRenderFps(pkg: String, cap: Int): Int {
+        // The cumulative counter is per-package: after a game switch (or
+        // a long stretch where the SurfaceFlinger tier succeeded and this
+        // fallback never ran), differencing against the previous game's
+        // counter produced a garbage first sample.
+        if (hwuiPrevPkg != pkg) {
+            hwuiPrevPkg = pkg
+            hwuiPrevFrames = -1L
+            hwuiPrevAtMs = 0L
+        }
         val frames = try {
             val result = Shell.cmd("dumpsys gfxinfo $pkg").exec()
             if (!result.isSuccess) return 0

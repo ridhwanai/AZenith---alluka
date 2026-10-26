@@ -77,23 +77,30 @@ fn apply_jit() {
         Err(_) => Vec::new(),
     };
 
-    let mut handles = Vec::new();
-    for pkg in packages {
-        handles.push(thread::spawn(move || {
-            let ok = Command::new("cmd")
-                .args(["package", "compile", "-m", "speed-profile", &pkg])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if ok {
-                log_verbose(&format!("{} | Success", pkg));
-            }
-        }));
-    }
-    for handle in handles {
-        let _ = handle.join();
+    // Bounded fan-out: the old code spawned one thread (and one child
+    // process) per third-party package — 200+ at once on a typical phone,
+    // all fighting for CPU/IO during module initialize. Four at a time
+    // keeps the burst flat; the result is identical.
+    for chunk in packages.chunks(4) {
+        let mut handles = Vec::new();
+        for pkg in chunk {
+            let pkg = pkg.clone();
+            handles.push(thread::spawn(move || {
+                let ok = Command::new("cmd")
+                    .args(["package", "compile", "-m", "speed-profile", &pkg])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if ok {
+                    log_verbose(&format!("{} | Success", pkg));
+                }
+            }));
+        }
+        for handle in handles {
+            let _ = handle.join();
+        }
     }
 }
 

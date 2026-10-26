@@ -40,7 +40,10 @@ pub const COOLING_FLOOR: f32 = 0.02; // below this intensity, force full release
 pub const HISTORY_WINDOW: usize = 200;
 pub const CPU_LOAD_WINDOW: usize = 10;
 pub const BATTERY_TEMP_PATH: &str = "/sys/class/power_supply/battery/temp";
-pub const SAVE_INTERVAL_EVENTS: usize = 50;
+// At the 3s control tick, 50 events meant a serialize+write+rename of
+// the learning data every ~50-150s. 200 aligns it with the 600s time
+// interval below.
+pub const SAVE_INTERVAL_EVENTS: usize = 200;
 pub const SAVE_INTERVAL_SECS: u64 = 600;
 pub const SMOOTHING_ALPHA: f32 = 0.3;
 
@@ -70,10 +73,20 @@ pub const PREDICT_MIN_SAMPLES: usize = 5;
 pub const PREDICT_AVG_WINDOW: usize = 8;
 pub const PREDICT_LEARNING_RATE: f32 = 0.01;
 pub const PREDICT_DAMP: f32 = 0.01;
-pub const PREDICT_BIAS_WEIGHT: f32 = 0.5;
+// The predictive bias is computed from the same blended control temp
+// as the PID, so a high weight double-counts one hot signal. 0.25 keeps
+// it a nudge, not a second throttle.
+pub const PREDICT_BIAS_WEIGHT: f32 = 0.25;
 pub const PREDICT_BIAS_HORIZON_SECS: u64 = 45;
 pub const PREDICT_STATS_LOG_INTERVAL: usize = 50;
-pub const SOC_TEMP_BLEND: f32 = 0.5; // blend of leading SoC-zone temp into control temp
+// Blend of leading SoC-zone temp into the control temp. The control
+// targets above are battery-scale (sustained = 40.0C), but a loaded SoC
+// zone sits at 65-75C: at the old 0.5 weight a normal gaming session
+// (battery 37C, SoC 70C) produced a 53.5C control temp — past the
+// critical target — and the PID saturated at full throttle (slowest
+// DVFSRC OPP). 0.2 keeps the early SoC reaction without saturating:
+// the same session now reads ~43.6C.
+pub const SOC_TEMP_BLEND: f32 = 0.2;
 
 // DVFSRC actuation
 pub const DVFSRC_SYSFS_PATH: &str = "/sys/kernel/helio-dvfsrc";

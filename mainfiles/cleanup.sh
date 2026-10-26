@@ -42,7 +42,11 @@ cleanup_modules() {
 }
 
 if [ -f /data/adb/modules/AZenith/disable ]; then
-    cat /data/adb/modules/AZenith/module.prop.orig > /data/adb/modules/AZenith/module.prop
+    # cp, not `cat orig > module.prop`: the redirection truncates
+    # module.prop before cat runs, so a missing .orig left it empty.
+    if [ -f /data/adb/modules/AZenith/module.prop.orig ]; then
+        cp -f /data/adb/modules/AZenith/module.prop.orig /data/adb/modules/AZenith/module.prop
+    fi
     rm /data/adb/service.d/.azenith_cleanup.sh
 elif [ ! -d /data/adb/modules/AZenith ]; then
     cleanup_modules

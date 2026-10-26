@@ -15,7 +15,7 @@
 #
 
 TMPDIR_FOR_VERIFY="$TMPDIR/.vunzip"
-mkdir "$TMPDIR_FOR_VERIFY"
+mkdir -p "$TMPDIR_FOR_VERIFY"
 
 abort_verify() {
     clear

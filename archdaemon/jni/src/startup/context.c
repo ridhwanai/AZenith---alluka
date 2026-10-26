@@ -28,6 +28,7 @@ GameConfig opts;
 SystemStateCache current_system_cache;
 int java_lock_pipe[2];
 bool java_daemon_died = false;
+volatile sig_atomic_t shutdown_requested = 0;
 GameConfig* g_game_cache = NULL;
 int g_game_cache_count = 0;
 pthread_mutex_t cache_mutex = PTHREAD_MUTEX_INITIALIZER;

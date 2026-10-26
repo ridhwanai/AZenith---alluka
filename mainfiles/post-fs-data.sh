@@ -17,14 +17,16 @@
 #
 
 readonly MODDIR="${0%/*}"
+readonly MODULE_CONFIG="/data/adb/.config/AZenith"
 LOCK_FILE="/dev/.azenithSingleInstance"
 
 # Single Instance Lock
-# Ksu in Metamodule mode, post-fs-data runs twice
-if [ -f "$LOCK_FILE" ]; then
+# Ksu in Metamodule mode, post-fs-data runs twice.
+# Create the lock atomically (noclobber): a plain [ -f ] + touch check
+# races with itself when two instances start at the same time.
+if ! (set -C; : > "$LOCK_FILE") 2>/dev/null; then
     exit 1
 fi
-touch "$LOCK_FILE"
 
 # Anti bootloop
 BOOTCOUNT=0
@@ -32,7 +34,7 @@ BOOTCOUNT=0
 
 BOOTCOUNT=$(( BOOTCOUNT + 1))
 
-if [ ! -f "/data/adb/modules/AZenith/explicit_I_want_a_bootloop" ] && [ $BOOTCOUNT -gt 1 ]; then
+if [ ! -f "/data/adb/modules/AZenith/explicit_I_want_a_bootloop" ] && [ "$BOOTCOUNT" -gt 1 ]; then
     touch "$MODDIR/disable"
     rm "$MODDIR/count.sh"
     rm /data/adb/service.d/.azenith_cleanup.sh
@@ -55,6 +57,9 @@ for p in $(/system/bin/toybox pidof sys.azenith-service); do
     kill -TERM "$p" 2>/dev/null
 done
 for p in $(/system/bin/toybox pidof sys.azenith-appmonitoring); do
+    kill -TERM "$p" 2>/dev/null
+done
+for p in $(/system/bin/toybox pidof sys.azenith-rianixiathermalcore); do
     kill -TERM "$p" 2>/dev/null
 done
 

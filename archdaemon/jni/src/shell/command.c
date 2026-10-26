@@ -69,9 +69,11 @@ char* execute_command(const char* format, ...) {
     }
     close(pipefd[0]);
 
-    int status;
-    waitpid(pid, &status, 0);
-    if (WEXITSTATUS(status))
+    int status = 0;
+    // WEXITSTATUS is only meaningful when waitpid succeeded and the
+    // child exited normally; on a failed waitpid `status` was
+    // uninitialised, and on a signalled child it is garbage.
+    if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
         return NULL;
 
     return strdup(trim_newline(output));

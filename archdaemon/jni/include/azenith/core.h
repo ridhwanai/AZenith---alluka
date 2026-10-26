@@ -9,6 +9,7 @@
 #include <limits.h>
 #include <poll.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -174,6 +175,7 @@ extern GameConfig opts;
 extern SystemStateCache current_system_cache;
 extern int java_lock_pipe[2];
 extern bool java_daemon_died;
+extern volatile sig_atomic_t shutdown_requested;
 extern char* custom_log_tag;
 
 void validateprop(void);

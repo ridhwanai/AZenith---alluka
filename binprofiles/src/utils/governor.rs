@@ -10,7 +10,7 @@ use std::path::Path;
 pub fn setgov(gov: &str) {
     if let Ok(paths) = glob::glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor") {
         for path in paths.flatten() {
-            let p_str = path.to_str().unwrap();
+            let Some(p_str) = path.to_str() else { continue };
             chmod(p_str, 0o644);
             let _ = fs::write(p_str, gov);
             chmod(p_str, 0o444);
@@ -20,7 +20,9 @@ pub fn setgov(gov: &str) {
     // Lock additional policy paths
     if let Ok(paths) = glob::glob("/sys/devices/system/cpu/cpufreq/policy*/scaling_governor") {
         for path in paths.flatten() {
-            chmod(path.to_str().unwrap(), 0o444);
+            if let Some(p_str) = path.to_str() {
+                chmod(p_str, 0o444);
+            }
         }
     }
 }

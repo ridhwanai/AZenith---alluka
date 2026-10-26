@@ -39,16 +39,45 @@ pub fn clear_background_apps() {
         }
     }
 
-    let exclude = ["com.android.systemui", "com.android.settings", "android", "system"];
+    // Packages that must never be force-stopped by the background
+    // cleaner. Matched EXACTLY: the old substring match both over-matched
+    // (any package merely containing "system"/"android") and under-matched
+    // the apps users actually keep running in the background.
+    let exclude = [
+        "com.android.systemui",
+        "com.android.settings",
+        "android",
+        "system",
+        // Music / media players: killing these mid-playback is the
+        // reported "game + music" breakage. Playback state is also
+        // double-checked against media_session below.
+        "com.spotify.music",
+        "com.google.android.apps.youtube.music",
+        "com.google.android.youtube",
+        "com.apple.android.music",
+        "com.deezer.android.app",
+        "com.aspiro.tidal",
+        "com.soundcloud.android",
+        "com.jio.media.jiosaavn",
+    ];
+
+    // Any package holding an active media session is playing (or ready
+    // to play) audio/video: never force-stop it, whatever it is.
+    let media_session_dump = Command::new("dumpsys")
+        .args(["media_session"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
 
     for pkg in invisible_pkgs {
         if visible_pkgs.contains(&pkg) {
             continue;
         }
 
-        let is_excluded = exclude.iter().any(|&ex| pkg.contains(ex));
+        let is_excluded = exclude.iter().any(|&ex| pkg == ex);
+        let has_media_session = !media_session_dump.is_empty() && media_session_dump.contains(&pkg);
 
-        if !is_excluded {
+        if !is_excluded && !has_media_session {
             let _ = Command::new("am")
                 .args(["force-stop", &pkg])
                 .status();

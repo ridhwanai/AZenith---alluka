@@ -39,7 +39,12 @@ pub fn performance_profile() {
     let lite_mode = get_litemode();
 
     // 2. Resolve governor CPU / I/O scheduler / Mali GPU
-    let cpu_gov = prop_or(&["persist.sys.azenith.custom_performance_cpu_gov"], "powersave");
+    // The fallback must be "performance", not "powersave": the seeding
+    // property is only written during initialize, and when that path was
+    // skipped (disabletweak at init time) the old default applied the
+    // powersave governor — fixed lowest freq on many kernels — while
+    // calling itself a performance profile.
+    let cpu_gov = prop_or(&["persist.sys.azenith.custom_performance_cpu_gov"], "performance");
     let io_scheduler = prop_or(
         &[
             "persist.sys.azenith.custom_performance_IO",

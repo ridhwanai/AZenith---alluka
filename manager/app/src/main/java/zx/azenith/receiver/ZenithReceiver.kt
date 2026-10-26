@@ -123,7 +123,16 @@ class ZenithReceiver : BroadcastReceiver() {
         val isProfile = title.lowercase(Locale.ROOT).let {
             it.contains("profile") || it.contains("mode") || it.contains("initializing...")
         }
-    
+
+        // Balanced/ECO mean "no game is running". Posted as an ongoing
+        // notification with a reshow-on-swipe delete intent (the old
+        // behaviour for every profile), they outlived the game session
+        // forever — the notification bar kept showing a profile long
+        // after the game was closed. Performance stays ongoing: it IS
+        // the live session.
+        val isExitProfile = title.contains("Balanced Profile", ignoreCase = true) ||
+            title.contains("ECO Mode", ignoreCase = true)
+
         if (isProfile && PropertyUtils.get("persist.sys.azenith.profilenotifications") == "0") {
             return
         }
@@ -156,8 +165,8 @@ class ZenithReceiver : BroadcastReceiver() {
             setContentTitle(title)
             setUsesChronometer(chrono)
             setShowWhen(false)
-            setOngoing(isProfile)
-            setAutoCancel(!isProfile)
+            setOngoing(isProfile && !isExitProfile)
+            setAutoCancel(!isProfile || isExitProfile)
             setContentIntent(clickPI)
         
             if (isProfile) {
@@ -170,7 +179,7 @@ class ZenithReceiver : BroadcastReceiver() {
                 setColor(ContextCompat.getColor(context, android.R.color.holo_blue_dark))
             }
         
-            if (isProfile) {
+            if (isProfile && !isExitProfile) {
                 val reshowIntent = Intent(context, ZenithReceiver::class.java).apply {
                     this.action = ACTION_RESHOW
                     putExtra("notifytitle", title)
@@ -185,6 +194,8 @@ class ZenithReceiver : BroadcastReceiver() {
         
             if (timeout > 0L) {
                 setTimeoutAfter(timeout)
+            } else if (isExitProfile) {
+                setTimeoutAfter(5_000L)
             }
         }
 

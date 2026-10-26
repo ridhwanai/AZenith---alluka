@@ -33,6 +33,20 @@ void* async_preload_worker(void* arg) {
  * @param ctx Pointer to DaemonContext structure.
  */
 void apply_performance_profile(DaemonContext* ctx) {
+    // Idempotency guard: unlike the eco/balanced appliers, this function
+    // had no already-applied check, and the daemon loop can re-enter it
+    // for the same game (e.g. while PID tracking is transiently empty).
+    // Every re-entry re-posted the notification, re-ran the profiler
+    // binary, re-ran preload checks and re-saved daemon state.
+    static char last_perf_pkg[MAX_PACKAGE] = {0};
+    if (ctx->cur_mode == PERFORMANCE_PROFILE && gamestart && strcmp(last_perf_pkg, gamestart) == 0) {
+        return;
+    }
+    if (gamestart) {
+        strncpy(last_perf_pkg, gamestart, sizeof(last_perf_pkg) - 1);
+        last_perf_pkg[sizeof(last_perf_pkg) - 1] = '\0';
+    }
+
     toast("Applying Performance Profile");
 
     ProfileMode prev_mode = ctx->cur_mode;

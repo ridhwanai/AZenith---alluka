@@ -78,8 +78,9 @@ int read_current_ma() {
  * charging state.
  */
 void disable_bypass() {
-    char path_key[PROP_VALUE_MAX];
-    __system_property_get("persist.sys.azenithconf.bypasspath", path_key);
+    char path_key[PROP_VALUE_MAX] = {0};
+    if (__system_property_get("persist.sys.azenithconf.bypasspath", path_key) <= 0)
+        return;
 
     if (strlen(path_key) == 0 || strcmp(path_key, "UNSUPPORTED") == 0)
         return;
@@ -99,11 +100,12 @@ void disable_bypass() {
 /**
  * @brief Sets the active bypass node to its 'on' value and locks it to bypass the battery charging
  * circuit.
- * @return 0 on success, -1 if unsupported, -2 if node not found in internal structure.
+ * @return 0 on success, -1 if unsupported, -2 if node not found in internal structure, -3 if the node write failed.
  */
 int enable_bypass() {
-    char path_key[PROP_VALUE_MAX];
-    __system_property_get("persist.sys.azenithconf.bypasspath", path_key);
+    char path_key[PROP_VALUE_MAX] = {0};
+    if (__system_property_get("persist.sys.azenithconf.bypasspath", path_key) <= 0)
+        return -1;
 
     if (strlen(path_key) == 0 || strcmp(path_key, "UNSUPPORTED") == 0)
         return -1;
@@ -112,8 +114,10 @@ int enable_bypass() {
 
     for (int i = 0; i < total_nodes; i++) {
         if (strcmp(bypass_list[i].name, path_key) == 0) {
-            echo_to_file(bypass_list[i].path, bypass_list[i].on_val, 1);
-            return 0;
+            // Propagate the write result: callers record "bypass applied"
+            // from this return value, so it must not claim success when
+            // nothing was written. -3 = node write failed.
+            return (echo_to_file(bypass_list[i].path, bypass_list[i].on_val, 1) == 0) ? 0 : -3;
         }
     }
     return -2;

@@ -93,7 +93,7 @@ pub fn apply_common_tweaks(tweaks: &CommonTweaks) {
     if let Ok(paths) = glob::glob("/dev/stune/*") {
         for path in paths.flatten() {
             if path.is_dir() {
-                let p_str = path.to_str().unwrap();
+                let Some(p_str) = path.to_str() else { continue };
                 write_lock(tweaks.stune_boost, &format!("{}/schedtune.boost", p_str));
                 write_lock(tweaks.stune_boost_enabled, &format!("{}/schedtune.sched_boost_enabled", p_str));
                 write_lock("0", &format!("{}/schedtune.prefer_idle", p_str));
@@ -128,20 +128,22 @@ pub fn apply_common_tweaks(tweaks: &CommonTweaks) {
         let read_ahead_kb = block_io.read_ahead_kb;
         let nr_requests = block_io.nr_requests;
 
-        std::thread::spawn(move || {
-            if let Ok(paths) = glob::glob("/sys/block/*") {
-                for path in paths.flatten() {
-                    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                        if file_name == "mmcblk0" || file_name == "mmcblk1" || file_name.starts_with("sd") {
-                            if let Some(p_str) = path.to_str() {
-                                write_lock(read_ahead_kb, &format!("{}/queue/read_ahead_kb", p_str));
-                                write_lock(nr_requests, &format!("{}/queue/nr_requests", p_str));
-                            }
+        // Inline, not a detached thread: binprofiles is a one-shot binary
+        // and process exit could kill a spawned thread mid-glob, so these
+        // writes applied only nondeterministically. The loop is a handful
+        // of sysfs writes — cheaper than the thread spawn it replaces.
+        if let Ok(paths) = glob::glob("/sys/block/*") {
+            for path in paths.flatten() {
+                if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                    if file_name == "mmcblk0" || file_name == "mmcblk1" || file_name.starts_with("sd") {
+                        if let Some(p_str) = path.to_str() {
+                            write_lock(read_ahead_kb, &format!("{}/queue/read_ahead_kb", p_str));
+                            write_lock(nr_requests, &format!("{}/queue/nr_requests", p_str));
                         }
                     }
                 }
             }
-        });
+        }
     }
 }
 

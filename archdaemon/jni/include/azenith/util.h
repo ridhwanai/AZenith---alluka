@@ -6,7 +6,7 @@
 [[gnu::always_inline]] char* trim_newline(char* string);
 void escape_shell_string(char* dest, const char* src, size_t max_size);
 char* timern(void);
-[[noreturn]] void sighandler(const int signal);
+void sighandler(const int signal);
 void checkstate(void);
 bool return_true(void);
 bool return_false(void);

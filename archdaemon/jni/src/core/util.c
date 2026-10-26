@@ -100,14 +100,18 @@ void notify(const char* title, const char* fmt, bool chrono, int timeout_ms, ...
  * @return Pointer to a statically allocated string containing the timestamp.
  */
 char* timern(void) {
-    static char timestamp[64];
+    // Thread-local: logging also happens from the detached preload
+    // thread, and a shared static buffer + localtime()'s static struct tm
+    // raced with the main thread's logging.
+    static __thread char timestamp[64];
     struct timeval tv;
     time_t current_time;
+    struct tm tm_storage;
     struct tm* local_time;
 
     gettimeofday(&tv, NULL);
     current_time = tv.tv_sec;
-    local_time = localtime(&current_time);
+    local_time = localtime_r(&current_time, &tm_storage);
 
     if (local_time == NULL) [[clang::unlikely]] {
         strcpy(timestamp, "[TimeError]");
@@ -126,20 +130,19 @@ char* timern(void) {
 }
 
 /**
- * @brief Handles termination signals and exits cleanly.
+ * @brief Handles termination signals by requesting an orderly shutdown.
  * @param signal The received exit signal.
+ *
+ * Async-signal-safe only: record the request and let the main loop shut
+ * down in normal context. The previous handler called log_info()
+ * (flock/open/localtime — none are async-signal-safe, and a signal
+ * landing mid-log-write could deadlock on the flock) and then _exit()ed
+ * with no cleanup at all, leaving the performance profile, renderer,
+ * DND and bypass state applied after the daemon was gone.
  */
-[[noreturn]] void sighandler(const int signal) {
-    switch (signal) {
-    case SIGTERM:
-        log_info("daemon", "shutdown signal=SIGTERM");
-        break;
-    case SIGINT:
-        log_info("daemon", "shutdown signal=SIGINT");
-        break;
-    }
-
-    _exit(EXIT_SUCCESS);
+void sighandler(const int signal) {
+    (void)signal;
+    shutdown_requested = 1;
 }
 
 /**
@@ -210,6 +213,21 @@ void runthermalcore(void) {
     char thermalcore[PROP_VALUE_MAX] = {0};
     __system_property_get("persist.sys.azenithconf.thermalcore", thermalcore);
     if (strcmp(thermalcore, "1") == 0) {
+        // Do not spawn a second thermalcore: on a soft reboot / service
+        // restart the old instance survives (post-fs-data.sh now kills it,
+        // but be safe here too) and two instances would fight over the
+        // same DVFSRC/cooling nodes.
+        FILE* fp_chk = popen("pidof sys.azenith-rianixiathermalcore", "r");
+        if (fp_chk) {
+            char chk_buf[32] = {0};
+            bool already_running = (fgets(chk_buf, sizeof(chk_buf), fp_chk) != NULL);
+            pclose(fp_chk);
+            if (already_running) {
+                log_info("thermal", "thermalcore already running pid=%s", chk_buf);
+                return;
+            }
+        }
+
         systemv("sys.azenith-rianixiathermalcore &");
         FILE* fp = popen("pidof sys.azenith-rianixiathermalcore", "r");
         if (fp == NULL) {
@@ -277,6 +295,19 @@ void extract_string_value(char* dest, const char* key_pos, size_t max_len) {
  * @param pkg Target package name to restart.
  */
 void restart_target_app(const char* pkg) {
+    // pkg is interpolated into a sh -c command below: only allow real
+    // package-name characters so a malformed config entry cannot break
+    // (or inject into) the command.
+    if (!pkg || !*pkg) {
+        return;
+    }
+    for (const char* p = pkg; *p; p++) {
+        if (!isalnum((unsigned char)*p) && *p != '.' && *p != '_') {
+            log_error("daemon", "restart skipped invalid pkg=%s", pkg);
+            return;
+        }
+    }
+
     log_info("daemon", "restarting app pkg=%s reason=pending_changes", pkg);
     is_restarting_renderer = true; // reuse existing flag, guards inotify/pid logic during respawn
     systemv("am force-stop %s && am start -n $(cmd package resolve-activity --brief %s | tail -n 1)",

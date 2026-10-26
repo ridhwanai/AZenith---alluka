@@ -26,8 +26,15 @@ int main_daemon(void) {
         return 1;
     }
 
-    signal(SIGINT, sighandler);
-    signal(SIGTERM, sighandler);
+    // No SA_RESTART: poll() in the main loop must wake up on shutdown
+    // signals instead of resuming its wait.
+    struct sigaction sa_shutdown;
+    memset(&sa_shutdown, 0, sizeof(sa_shutdown));
+    sa_shutdown.sa_handler = sighandler;
+    sigemptyset(&sa_shutdown.sa_mask);
+    sa_shutdown.sa_flags = 0;
+    sigaction(SIGINT, &sa_shutdown, NULL);
+    sigaction(SIGTERM, &sa_shutdown, NULL);
 
     DaemonContext ctx;
     init_daemon_context(&ctx);
@@ -120,19 +127,43 @@ int main_daemon(void) {
             break;
         }
 
+        if (shutdown_requested) {
+            // Orderly shutdown (SIGTERM/SIGINT, e.g. from post-fs-data.sh
+            // on every soft reboot): restore the balanced profile first
+            // so renderer/DND/refresh-rate/bypass state is not left
+            // applied with no daemon alive to revert it later.
+            log_info("daemon", "shutdown requested action=cleanup");
+            if (ctx.cur_mode == PERFORMANCE_PROFILE || ctx.cur_mode == ECO_MODE) {
+                apply_balanced_profile(&ctx);
+            }
+            __system_property_set("persist.sys.azenith.service", "");
+            __system_property_set("persist.sys.azenith.state", "stopped");
+            break;
+        }
+
         if (should_exit)
             break;
 
         int real_screen_state = get_screenstate(&current_system_cache);
 
+        // applyfreqbalance goes through systemv() (fork + sh + exec), so
+        // it must only run when the effective state changes. The old code
+        // ran it on every loop iteration in Balanced/ECO: the tracking
+        // strcpy below overwrote last_freqoffset unconditionally, so the
+        // change guard only ever worked for the "Disabled" case.
+        // last_freqoffset now stores a composite "offset|mode|screen" key.
+        char freq_key[PROP_VALUE_MAX];
+        snprintf(freq_key, sizeof(freq_key), "%s|%d|%d", ctx.config_freqoffset, (int)ctx.cur_mode, real_screen_state);
+        bool freq_apply_needed = false;
         if (strcmp(ctx.config_freqoffset, "Disabled") == 0) {
-            if (strcmp(ctx.last_freqoffset, "Disabled") != 0) {
-                systemv("sys.azenith-profilesettings applyfreqbalance");
-            }
+            freq_apply_needed = (strcmp(ctx.last_freqoffset, "Disabled") != 0);
         } else if (real_screen_state && (ctx.cur_mode == BALANCED_PROFILE || ctx.cur_mode == ECO_MODE)) {
-            systemv("sys.azenith-profilesettings applyfreqbalance");
+            freq_apply_needed = (strcmp(ctx.last_freqoffset, freq_key) != 0);
         }
-        strcpy(ctx.last_freqoffset, ctx.config_freqoffset);
+        if (freq_apply_needed) {
+            systemv("sys.azenith-profilesettings applyfreqbalance");
+            strcpy(ctx.last_freqoffset, (strcmp(ctx.config_freqoffset, "Disabled") == 0) ? "Disabled" : freq_key);
+        }
 
         handle_dynamic_bypass(&ctx);
 

@@ -16,6 +16,28 @@ pub fn read_freqs(path: &str) -> Vec<u64> {
     freqs
 }
 
+/// cpufreq `policy*` paths sorted by numeric policy id (policy0, policy6, ...).
+/// Glob iteration order is filesystem order, and the PPM writers below map
+/// the iteration index onto the kernel's cluster index — an unsorted walk
+/// can write the big cluster's limits to cluster 0 and vice versa.
+fn sorted_policy_paths(pattern: &str) -> Vec<std::path::PathBuf> {
+    let mut paths: Vec<std::path::PathBuf> = match glob::glob(pattern) {
+        Ok(g) => g.flatten().collect(),
+        Err(_) => Vec::new(),
+    };
+    paths.sort_by_key(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| {
+                n.trim_start_matches(|c: char| !c.is_ascii_digit())
+                    .parse::<u32>()
+                    .ok()
+            })
+            .unwrap_or(u32::MAX)
+    });
+    paths
+}
+
 pub fn which_maxfreq(path: &str) -> Option<u64> {
     read_freqs(path).into_iter().max()
 }
@@ -81,9 +103,9 @@ pub fn setfreqppm() {
     let curprofile = get_curprofile();
     let mut cluster = 0;
 
-    if let Ok(paths) = glob::glob("/sys/devices/system/cpu/cpufreq/policy*") {
-        for path in paths.flatten() {
-            let p_str = path.to_str().unwrap();
+    for path in sorted_policy_paths("/sys/devices/system/cpu/cpufreq/policy*") {
+        let Some(p_str) = path.to_str() else { continue };
+        {
             let policy_name = path.file_name().unwrap_or_default().to_string_lossy();
 
             let cpu_maxfreq: u64 = fs::read_to_string(format!("{}/cpuinfo_max_freq", p_str))
@@ -114,7 +136,7 @@ pub fn setfreq() {
 
     if let Ok(paths) = glob::glob("/sys/devices/system/cpu/*/cpufreq") {
         for path in paths.flatten() {
-            let p_str = path.to_str().unwrap();
+            let Some(p_str) = path.to_str() else { continue };
 
             let policy_name = path.parent()
                 .and_then(|p: &Path| p.file_name())
@@ -143,7 +165,9 @@ pub fn setfreq() {
 
     if let Ok(sc_paths) = glob::glob("/sys/devices/system/cpu/cpufreq/policy*/scaling_*_freq") {
         for sp in sc_paths.flatten() {
-            chmod(sp.to_str().unwrap(), 0o644);
+            if let Some(sp_str) = sp.to_str() {
+                chmod(sp_str, 0o644);
+            }
         }
     }
 }
@@ -156,9 +180,9 @@ pub fn setgamefreqppm() {
     let litemode = get_litemode();
     let mut cluster = 0;
 
-    if let Ok(paths) = glob::glob("/sys/devices/system/cpu/cpufreq/policy*") {
-        for path in paths.flatten() {
-            let p_str = path.to_str().unwrap();
+    for path in sorted_policy_paths("/sys/devices/system/cpu/cpufreq/policy*") {
+        let Some(p_str) = path.to_str() else { continue };
+        {
             let policy_name = path.file_name().unwrap_or_default().to_string_lossy();
 
             let cpu_maxfreq: u64 = fs::read_to_string(format!("{}/cpuinfo_max_freq", p_str))
@@ -186,7 +210,7 @@ pub fn setgamefreq() {
 
     if let Ok(paths) = glob::glob("/sys/devices/system/cpu/*/cpufreq") {
         for path in paths.flatten() {
-            let p_str = path.to_str().unwrap();
+            let Some(p_str) = path.to_str() else { continue };
             let policy_name = path.parent()
                 .and_then(|p: &Path| p.file_name())
                 .unwrap_or_default()
@@ -211,7 +235,9 @@ pub fn setgamefreq() {
 
     if let Ok(sc_paths) = glob::glob("/sys/devices/system/cpu/cpufreq/policy*/scaling_*_freq") {
         for sp in sc_paths.flatten() {
-            chmod(sp.to_str().unwrap(), 0o444);
+            if let Some(sp_str) = sp.to_str() {
+                chmod(sp_str, 0o444);
+            }
         }
     }
 }

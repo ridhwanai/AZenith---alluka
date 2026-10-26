@@ -301,14 +301,30 @@ impl ThermalMonitor {
 
             let predict_bias = self.predictive_model.predictive_bias(PREDICT_BIAS_HORIZON_SECS);
             let blended_intensity = (throttle_intensity + PREDICT_BIAS_WEIGHT * predict_bias).min(1.0);
+            // Single owner for the SoC rail: while the Performance profile
+            // is active, binprofiles pins DVFSRC to full performance - if
+            // thermalcore caps the same rail from the side, the two fight
+            // and FPS collapses in steps. In Performance, act only as an
+            // emergency guard (battery at/above the critical threshold);
+            // Balanced/ECO keep the normal control loop.
+            let in_performance = std::fs::read_to_string(
+                "/data/adb/.config/AZenith/API/current_profile",
+            )
+                .map(|s| s.trim() == "1")
+                .unwrap_or(false);
+            let effective_intensity = if in_performance && temp < CRITICAL_THRESHOLD {
+                0.0
+            } else {
+                blended_intensity
+            };
 
-            self.apply_intensity(blended_intensity, temp, cpu_features.cpu_load);
+            self.apply_intensity(effective_intensity, temp, cpu_features.cpu_load);
 
             self.learning_data.record_event(
                 temp,
                 cpu_features.load_variance,
                 target_temp,
-                blended_intensity
+                effective_intensity
             );
 
             self.predict_log_counter += 1;
@@ -389,7 +405,11 @@ impl ThermalMonitor {
                     let borrowed_fd = unsafe { BorrowedFd::borrow_raw(fd) };
                     let poll_fd = PollFd::new(borrowed_fd, PollFlags::POLLIN);
 
-                    match poll(&mut [poll_fd], PollTimeout::from(1000u16)) {
+                    // 3s tick, same as the poll fallback below: a 1s tick
+                    // re-read every zone + /proc/stat and re-ran the full
+                    // control pass every second forever, even when the
+                    // temperature had not moved at all.
+                    match poll(&mut [poll_fd], PollTimeout::from(3000u16)) {
                         Ok(0) => {
                             self.handle_temperature_change();
                             continue;

@@ -78,6 +78,9 @@ install_manager() {
 		# Pengecekan batas waktu
 		if [ $i -ge $MAX_TIMEOUT ]; then
 			echo "[!] Installation took too long. Stopping..."
+			# Kill the installer's children (pm install) too: killing only
+			# the wrapper subshell leaves pm running while the APK is deleted.
+			pkill -9 -P $pid 2>/dev/null
 			kill -9 $pid 2>/dev/null
 			echo "Timeout: Installation exceeded 10 seconds" > "$tmp_log"
 			break

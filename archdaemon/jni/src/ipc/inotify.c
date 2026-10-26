@@ -26,15 +26,10 @@ static void handle_background_apps_event(DaemonContext* ctx) {
     int max_track_pids = 2;
     int new_count = get_pids_of(gamestart, new_pids, max_track_pids);
 
-    if (new_count == 0 && game_pid_count > 0) {
-        struct stat st;
-        if (stat("/data/adb/.config/AZenith/background_apps", &st) == 0 && st.st_size == 0) {
-            new_count = game_pid_count;
-            for (int i = 0; i < game_pid_count; i++) {
-                new_pids[i] = game_pids[i];
-            }
-        }
-    }
+    // No resurrection of the old PID set here: the background_apps writer
+    // publishes atomically (tmp + rename), so an empty file is a real
+    // "no live apps" state. Copying the old PIDs back made a closed game
+    // look alive forever and the exit path below never fired.
 
     bool pids_changed = false;
     if (new_count != game_pid_count) {
@@ -80,6 +75,12 @@ static void handle_background_apps_event(DaemonContext* ctx) {
             if (strcmp(current_system_cache.focused_app, gamestart) == 0 || is_restarting_renderer) {
                 log_info("inotify", "game pids dropped reason=restarting game=%s",
                            active_app_name ? active_app_name : gamestart);
+                // The focus cache may be stale (this event can be processed
+                // before the matching app_status event). Force a fresh
+                // profile checkup so the loop re-reads focus and re-counts
+                // PIDs instead of trusting this snapshot forever; if the
+                // game is really gone, the PID-retry path drops it.
+                ctx->need_profile_checkup = true;
             } else {
                 log_info("inotify", "game closed action=exit_performance game=%s",
                            active_app_name ? active_app_name : gamestart);
@@ -116,7 +117,11 @@ int setup_inotify_watchers(void) {
                    {"/data/adb/modules/AZenith/", IN_MODIFY | IN_CREATE | IN_MOVED_TO | IN_DELETE}};
 
     for (size_t i = 0; i < sizeof(targets) / sizeof(targets[0]); i++) {
-        inotify_add_watch(fd, targets[i].path, targets[i].mask);
+        if (inotify_add_watch(fd, targets[i].path, targets[i].mask) < 0) {
+            // A silently missing watch means events for that directory
+            // never arrive for the daemon's whole lifetime.
+            log_warn("inotify", "watch failed path=%s errno=%d", targets[i].path, errno);
+        }
     }
     return fd;
 }
@@ -134,11 +139,22 @@ bool process_inotify_events(int inotify_fd, DaemonContext* ctx, int timeout_ms) 
     struct pollfd pfds[2];
     pfds[0].fd = inotify_fd;
     pfds[0].events = POLLIN;
-    pfds[1].fd = java_lock_pipe[0];
+    // If the lock pipe failed to create at startup, java_lock_pipe[0] is 0
+    // (stdin): polling it can spuriously report the java daemon as dead.
+    // A negative fd is ignored by poll.
+    pfds[1].fd = (java_lock_pipe[0] > 0) ? java_lock_pipe[0] : -1;
     pfds[1].events = POLLIN;
 
     int ret = poll(pfds, 2, timeout_ms);
     if (ret > 0) {
+        if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            // A dead inotify fd returns instantly forever: without a pause
+            // the main loop busy-spins on it.
+            log_error("inotify", "watch fd error revents=0x%x", pfds[0].revents);
+            usleep(500000);
+            return false;
+        }
+
         if (pfds[1].revents & POLLIN) {
             java_daemon_died = true;
             return true;
@@ -290,8 +306,12 @@ void handle_dynamic_bypass(DaemonContext* ctx) {
 
             if (current_battery >= 0 && bypass_charging_allowed && is_device_charging) {
                 if (current_battery >= threshold) {
-                    if (read_current_ma() > 50) {
-                        enable_bypass();
+                    // read_current_ma() returns the 9999 sentinel when the
+                    // current node is unreadable: that is "unknown", not a
+                    // high current, and must not enable bypass. Only record
+                    // bypass as applied when the node write actually worked.
+                    int current_ma = read_current_ma();
+                    if (current_ma != 9999 && current_ma > 50 && enable_bypass() == 0) {
                         if (!ctx->bypass_applied) {
                             log_info("bypass", "bypass enabled battery=%d threshold=%d", current_battery, threshold);
                             ctx->bypass_applied = true;
