@@ -447,20 +447,7 @@ if [ "$APP_INSTALLED" = "true" ]; then
     pm enable --user 0 zx.azenith/.Launcher > /dev/null 2>&1
     
     echo "- Setting Permissions..."
-    pm grant zx.azenith android.permission.READ_EXTERNAL_STORAGE
-    pm grant zx.azenith android.permission.POST_NOTIFICATIONS
-    pm grant zx.azenith android.permission.READ_MEDIA_IMAGES
-    pm grant zx.azenith android.permission.WRITE_SECURE_SETTINGS > /dev/null 2>&1
-    pm grant zx.azenith android.permission.PACKAGE_USAGE_STATS > /dev/null 2>&1
-    pm grant zx.azenith android.permission.BATTERY_STATS > /dev/null 2>&1
-    pm grant zx.azenith android.permission.DUMP > /dev/null 2>&1
-    appops set zx.azenith SYSTEM_ALERT_WINDOW allow > /dev/null 2>&1
-    appops set zx.azenith WRITE_SETTINGS allow > /dev/null 2>&1
-    appops set zx.azenith GET_USAGE_STATS allow > /dev/null 2>&1
-    appops set zx.azenith RUN_IN_BACKGROUND allow > /dev/null 2>&1
-    appops set zx.azenith RUN_ANY_IN_BACKGROUND allow > /dev/null 2>&1
-    appops set zx.azenith ACCESS_RESTRICTED_SETTINGS allow > /dev/null 2>&1
-    dumpsys deviceidle whitelist +zx.azenith > /dev/null 2>&1
+    
 fi
 
 # Remove old module files if available

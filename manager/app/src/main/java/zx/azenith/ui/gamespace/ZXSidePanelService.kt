@@ -2361,15 +2361,23 @@ private class ZXRealTelemetryCollector {
      */
     fun sampleFps(pkg: String, rootGranted: Boolean, defaultCap: Int): Int {
         val cap = defaultCap.coerceAtLeast(60)
-        // MTK GED first: the kernel graphics daemon's own FPS counter is
+        // Best source first: the daemon's root fps client streams SurfaceFlinger's own
+        // FrameTimeline report, i.e. the rate frames actually reached the display, with no layer
+        // probing and no per-second dumpsys fork. Empty or stale falls through to the tiers below.
+        readDaemonFps(cap, rootGranted)?.let {
+            lastFps = it
+            lastFpsSource = "frametimeline"
+            return lastFps
+        }
+        // MTK GED second: the kernel graphics daemon's own FPS counter is
         // a plain sysfs file read — no process spawn, no binder call. The
         // SF tier below execs a dumpsys into the SurfaceFlinger process
         // on every sample; on a low-end SoC that periodic compositor
         // work is itself a frame-time cost while gaming, so it must not
-        // be the primary source where a vendor counter exists. (This
-        // tier existed before the SF rework and was dropped with it;
-        // on MTK it also keeps working when the game's presenting
-        // layer is a SurfaceView the SF probe cannot see.)
+        // run ahead of the vendor counter where one exists. (This tier
+        // existed before the SF rework and was dropped with it; on MTK
+        // it also keeps working when the game's presenting layer is a
+        // SurfaceView the SF probe cannot see.)
         readGedFps(rootGranted, cap)?.let {
             lastFps = it
             lastFpsSource = "ged"
@@ -2430,6 +2438,22 @@ private class ZXRealTelemetryCollector {
             if (fps > best) best = fps
         }
         return best.takeIf { it > 0 }
+    }
+
+    /**
+     * The daemon's fps client writes "<fps> <epoch_ms>". The stamp is what separates a live
+     * reading from a frozen one, because /data/adb is root-only and the file cannot be stat'ed
+     * without su.
+     */
+    private fun readDaemonFps(cap: Int, rootGranted: Boolean): Int? {
+        val raw = readFileTextDirectOrSu("/data/adb/.config/AZenith/API/current_fps", rootGranted)
+            ?: return null
+        val f = raw.trim().split(Regex("\\s+"))
+        if (f.size < 2) return null
+        val fps = f[0].toIntOrNull() ?: return null
+        val at = f[1].toLongOrNull() ?: return null
+        if (System.currentTimeMillis() - at > 3_000L) return null
+        return fps.coerceIn(1, cap)
     }
 
     /**

@@ -30,16 +30,12 @@ android {
         }
     }
 
-    val hasKeystore = file("azenith.jks").exists() && !System.getenv("KS_PWD").isNullOrEmpty()
-
     signingConfigs {
-        if (hasKeystore) {
-            create("release") {
-                storeFile = file("azenith.jks")
-                storePassword = System.getenv("KS_PWD")
-                keyAlias = "azenith_key"
-                keyPassword = System.getenv("KS_PWD")
-            }
+        create("release") {
+            storeFile = file("azenith.jks")
+            storePassword = System.getenv("KS_PWD")
+            keyAlias = "azenith_key"
+            keyPassword = System.getenv("KS_PWD")
         }
     }
     
@@ -52,11 +48,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             vcsInfo.include = false
-            signingConfig = if (hasKeystore) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            signingConfig = signingConfigs.getByName("release")
             
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"), 

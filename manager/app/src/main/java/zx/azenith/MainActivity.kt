@@ -91,6 +91,7 @@ import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.hazeSource
 import java.io.File
 import kotlin.math.abs
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -125,6 +126,11 @@ class MainActivity : ComponentActivity() {
             window.isNavigationBarContrastEnforced = false
         }
 
+        // Chinese forks reset the app-list app-op on boot, so re-assert it every launch.
+        lifecycleScope.launch(Dispatchers.IO) {
+            RootUtils.ensurePackageVisibility()
+        }
+
         if (savedInstanceState != null) {
             isStandingByForGameSpace = savedInstanceState.getBoolean("is_standing_by_gamespace", false)
         }
@@ -144,11 +150,7 @@ class MainActivity : ComponentActivity() {
             }
         } else null
 
-        val shouldAutoLaunchGameSpace = isGameSpaceEnabled(this) && fromTileType == null && !isHandoffDone()
-        if (shouldAutoLaunchGameSpace) {
-            isStandingByForGameSpace = true
-            launchGameSpaceDirectly(this)
-        }
+        val shouldAutoLaunchGameSpace = false
 
         if (zx.azenith.ui.gamespace.ZXSidePanelService.isForceSidepanelEnabled() &&
             !zx.azenith.ui.gamespace.ZXSidePanelService.isServiceActive
@@ -163,7 +165,7 @@ class MainActivity : ComponentActivity() {
                     context.getSharedPreferences("settings", Context.MODE_PRIVATE)
                 }
                 var gameSpaceOn by remember {
-                    mutableStateOf(settings.getBoolean(GAME_SPACE_MODE_KEY, false))
+                    mutableStateOf(false)
                 }
 
                 // Watched rather than read once: flipping the switch in Settings is what hands off,
@@ -171,7 +173,7 @@ class MainActivity : ComponentActivity() {
                 DisposableEffect(settings) {
                     val listener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
                         if (key == GAME_SPACE_MODE_KEY) {
-                            gameSpaceOn = prefs.getBoolean(GAME_SPACE_MODE_KEY, false)
+                            gameSpaceOn = false
                         }
                     }
                     settings.registerOnSharedPreferenceChangeListener(listener)
@@ -181,7 +183,7 @@ class MainActivity : ComponentActivity() {
                 if (!isStandingByForGameSpace) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         MainScreen(fromTileType)
-                        ZXGameSpaceHandoff(armed = gameSpaceOn)
+                        ZXGameSpaceHandoff(armed = false)
                     }
                 } else {
                     Box(
@@ -207,8 +209,7 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         val fromTile = intent.action == "android.service.quicksettings.action.QS_TILE_PREFERENCES"
         if (!fromTile && isGameSpaceEnabled(this)) {
-            isStandingByForGameSpace = true
-            launchGameSpaceDirectly(this)
+            // Auto-launch disabled; keep existing behavior disabled
         }
     }
 
