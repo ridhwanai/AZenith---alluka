@@ -32,10 +32,12 @@ q9() {
 q sys.azenith-rianixiathermalcore
 q sys.azenith-service
 q sys.azenith-appmonitoring
+q sys.azenith-fpsclient
 sleep 1
 q9 sys.azenith-rianixiathermalcore
 q9 sys.azenith-service
 q9 sys.azenith-appmonitoring
+q9 sys.azenith-fpsclient
 
 resetprop | awk -F'[][]' '/persist\.sys\.azenith/ {print $2}' | while read -r prop; do
     resetprop -p --delete "$prop"

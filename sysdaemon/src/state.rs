@@ -151,7 +151,7 @@ pub(crate) fn write_atomic(path: &str, data: &str) -> bool {
     static SEQ: AtomicU32 = AtomicU32::new(0);
     let tmp = format!("{path}.{}.tmp", SEQ.fetch_add(1, Ordering::Relaxed));
     let r = fs::write(&tmp, data)
-        .and_then(|_| fs::set_permissions(&tmp, fs::Permissions::from_mode(0o666)))
+        .and_then(|_| fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644)))
         .and_then(|_| fs::rename(&tmp, path));
     if let Err(e) = r {
         error!("failed to write {path}: {e}");

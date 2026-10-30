@@ -18,8 +18,8 @@ readonly GRADLE_FILE="manager/app/build.gradle.kts"
 [ -f "version" ] || { echo "❌ Error: 'version' file not found!"; exit 1; }
 [ -f "version_type" ] || { echo "❌ Error: 'version_type' file not found!"; exit 1; }
 
-readonly VERSION=$(cat version)
-readonly VERSION_TYPE=$(cat version_type)
+readonly VERSION=$(cat version | tr -d '\n\r ')
+readonly VERSION_TYPE=$(cat version_type | tr -d '\n\r ')
 readonly VERSION_CODE=$(git rev-list HEAD --count)
 readonly SHORT_HASH=$(git rev-parse --short HEAD)
 readonly RELEASE_CODE="${VERSION_CODE}-${SHORT_HASH}-${VERSION_TYPE}"

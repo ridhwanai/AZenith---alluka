@@ -29,7 +29,7 @@ need_integrity=(
 )
 
 # Version info
-version="$(cat version)"
+version="$(cat version | tr -d '\n\r ')"
 version_type="$(cat version_type | tr -d '\n\r ')" # Hapus spasi/newline agar presisi
 version_code="$(git rev-list HEAD --count)"
 release_code="$(git rev-list HEAD --count)-$(git rev-parse --short HEAD)-$version_type"

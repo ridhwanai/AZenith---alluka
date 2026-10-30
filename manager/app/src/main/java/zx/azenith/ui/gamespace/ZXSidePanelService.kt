@@ -2355,15 +2355,16 @@ private class ZXRealTelemetryCollector {
     )
 
     /**
-     * FPS for [pkg], cheapest tier first; the first honest hit wins.
-     * Tiers that come back empty fall through, tiers that come back impossible
-     * (<=0 or above the panel rate) are discarded rather than shown.
+     * Best source first: the daemon's fps client (eBPF libgui uprobe -> TaskFpsCallback ->
+     * SurfaceFlinger timestats), which writes "<fps> <epoch_ms>" to API/current_fps.
+     * Falls through to vendor GED, per-layer SurfaceFlinger latency, FPSGO, or HWUI when
+     * the daemon reading is empty or stale (>3s), e.g. in non-root mode.
      */
-    fun sampleFps(pkg: String, rootGranted: Boolean, defaultCap: Int): Int {
+    fun sampleFps(@Suppress("UNUSED_PARAMETER") pkg: String, rootGranted: Boolean, defaultCap: Int): Int {
         val cap = defaultCap.coerceAtLeast(60)
         // Best source first: the daemon's root fps client streams SurfaceFlinger's own
-        // FrameTimeline report, i.e. the rate frames actually reached the display, with no layer
-        // probing and no per-second dumpsys fork. Empty or stale falls through to the tiers below.
+        // FrameTimeline / libgui uprobe report, i.e. the rate frames actually reached the display,
+        // with no layer probing and no per-second dumpsys fork. Empty or stale falls through to the tiers below.
         readDaemonFps(cap, rootGranted)?.let {
             lastFps = it
             lastFpsSource = "frametimeline"
@@ -2489,12 +2490,6 @@ private class ZXRealTelemetryCollector {
         return fps
     }
 
-    /**
-     * The layer carrying frame history is not predictable from its name (the highest
-     * #NNNN is usually a stale parent), so probe the candidates and keep whichever
-     * actually holds frames. The result is cached because probing costs one dumpsys
-     * per candidate.
-     */
     private fun resolveAppLayer(pkg: String): String? {
         if (cachedLayer != null && cachedLayerPkg == pkg) return cachedLayer
         val list = runShell("dumpsys SurfaceFlinger --list") ?: return null

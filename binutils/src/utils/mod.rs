@@ -244,9 +244,15 @@ pub fn setrefreshrates(rate: &str) {
 }
 
 pub fn restartservice() {
+    let _ = systemv("pkill -TERM -f sys.azenith-rianixiathermalcore");
+    let _ = systemv("pkill -TERM -f sys.azenith-service");
+    let _ = systemv("pkill -TERM -f sys.azenith-appmonitoring");
+    let _ = systemv("pkill -TERM -f sys.azenith-fpsclient");
+    std::thread::sleep(std::time::Duration::from_millis(400));
     let _ = systemv("pkill -9 -f sys.azenith-rianixiathermalcore");
     let _ = systemv("pkill -9 -f sys.azenith-service");
     let _ = systemv("pkill -9 -f sys.azenith-appmonitoring");
+    let _ = systemv("pkill -9 -f sys.azenith-fpsclient");
     
     setprop("persist.sys.azenith.state", "stopped");
     

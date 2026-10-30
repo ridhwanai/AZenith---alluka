@@ -288,7 +288,7 @@ void expose_telemetry_access(void) {
 
     /* API mirror */
     systemv("mkdir -p /data/data/zx.azenith/API /data/adb/.config/AZenith/API");
-    chmod("/data/data/zx.azenith/API", 0777);
+    chmod("/data/data/zx.azenith/API", 0755);
     chmodg("/data/data/zx.azenith/API/*", 0644);
     chmodg("/data/adb/.config/AZenith/API/*", 0644);
 
